@@ -8,7 +8,7 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                             QTableWidgetItem, QLabel, QProgressBar, QMessageBox,
                             QTabWidget, QSplitter, QLineEdit)
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QDateTime
-from PyQt6.QtGui import QFont, QIcon, QPainter
+from PyQt6.QtGui import QFont, QIcon, QPainter, QColor
 from PyQt6.QtCharts import QChart, QChartView, QLineSeries, QDateTimeAxis, QValueAxis
 import logging
 from datetime import datetime
@@ -345,7 +345,7 @@ class MainWindow(QMainWindow):
         
         # GUI kurulumu
         self.setWindowTitle("WiFi Scanner Tool")
-        self.setGeometry(100, 100, 800, 600)
+        self.setGeometry(100, 100, 1200, 800)
         
         # Ana widget ve layout
         main_widget = QWidget()
@@ -404,8 +404,12 @@ class MainWindow(QMainWindow):
         
         # Sonuç tablosu
         self.result_table = QTableWidget()
-        self.result_table.setColumnCount(7)
-        self.result_table.setHorizontalHeaderLabels(["IP", "MAC", "Hostname", "Üretici", "Açık Portlar", "İşletim Sistemi", "Servisler"])
+        self.result_table.setColumnCount(9)
+        self.result_table.setHorizontalHeaderLabels([
+            "IP", "MAC", "Hostname", "Üretici", 
+            "Açık Portlar", "İşletim Sistemi", "Servisler",
+            "Çevrimiçi", "Son Görülme"
+        ])
         scan_layout.addWidget(self.result_table)
         
         # Yenile butonu
@@ -414,7 +418,8 @@ class MainWindow(QMainWindow):
         scan_layout.addWidget(refresh_button)
         
         self.scanner = NetworkScanner()
-        self.worker = None
+        self.scan_worker = None
+        self.monitor_worker = None
         
         # Grafik sekmesi
         chart_tab = QWidget()
@@ -552,21 +557,20 @@ class MainWindow(QMainWindow):
             self.result_table.setRowCount(0)
             
             # Tarama işlemini başlat
-            self.worker = ScanWorker(self.scanner, interface, ip_range)
-            self.worker.progress.connect(self.update_progress)
-            self.worker.status.connect(self.update_status)
-            self.worker.finished.connect(self.scan_finished)
-            self.worker.error.connect(self.scan_error)
-            self.worker.start()
+            self.scan_worker = ScanWorker(self.scanner, interface, ip_range)
+            self.scan_worker.progress.connect(self.update_progress)
+            self.scan_worker.status.connect(self.update_status)
+            self.scan_worker.finished.connect(self.scan_finished)
+            self.scan_worker.error.connect(self.show_error)
+            self.scan_worker.start()
             
         except Exception as e:
-            QMessageBox.critical(self, "Hata", f"Tarama başlatılırken hata: {str(e)}")
-            self.scan_button.setEnabled(True)
+            self.show_error(str(e))
 
     def stop_scan(self):
         """Aktif taramayı durdur"""
-        if self.worker and self.worker.isRunning():
-            self.worker.stop()
+        if self.scan_worker and self.scan_worker.isRunning():
+            self.scan_worker.stop()
             self.reset_scan_ui()
             
     def reset_scan_ui(self):
@@ -587,6 +591,7 @@ class MainWindow(QMainWindow):
         self.status_label.setText(message)
         
     def scan_finished(self, devices):
+        """Tarama tamamlandığında çağrılır"""
         try:
             # Sonuçları sakla
             self.last_scan_results = devices
@@ -666,14 +671,18 @@ class MainWindow(QMainWindow):
             for device in devices:
                 self.activity_chart.addDevice(device['ip'])
             
+            # İzleme worker'ını başlat
+            self.monitor_worker = MonitorWorker(self.scanner, devices)
+            self.monitor_worker.device_updated.connect(self.update_device_status)
+            self.monitor_worker.error.connect(self.show_error)
+            self.monitor_worker.start()
+            
         except Exception as e:
-            error_msg = f"Sonuçları işlerken hata oluştu: {str(e)}"
-            self.logger.error(error_msg, exc_info=True)
-            QMessageBox.critical(self, "Hata", error_msg)
+            self.show_error(str(e))
         finally:
             self.progress_bar.setVisible(False)
 
-    def scan_error(self, error_msg):
+    def show_error(self, error_msg):
         QMessageBox.warning(self, "Hata", error_msg)
         self.scan_button.setEnabled(True)
         self.progress_bar.setVisible(False)
@@ -683,7 +692,7 @@ class MainWindow(QMainWindow):
         """Cihaz aktivitelerini güncelle"""
         try:
             # Eğer tarama çalışıyorsa ve sonuçlar varsa
-            if hasattr(self, 'worker') and self.worker and self.worker.isRunning():
+            if hasattr(self, 'scan_worker') and self.scan_worker and self.scan_worker.isRunning():
                 # Sonuçları al
                 if hasattr(self, 'last_scan_results') and self.last_scan_results:
                     for device in self.last_scan_results:
@@ -692,6 +701,40 @@ class MainWindow(QMainWindow):
                         self.activity_chart.updateDeviceActivity(device['ip'], activity_level)
         except Exception as e:
             self.logger.error(f"Aktivite güncelleme hatası: {str(e)}")
+
+    def update_device_status(self, device):
+        """Cihaz durumu güncellendiğinde çağrılır"""
+        try:
+            # Cihazı tabloda bul
+            for row in range(self.result_table.rowCount()):
+                if self.result_table.item(row, 0).text() == device['ip']:
+                    # Çevrimiçi durumunu güncelle
+                    status_item = QTableWidgetItem("Çevrimiçi" if device['is_online'] else "Çevrimdışı")
+                    status_item.setForeground(QColor("green" if device['is_online'] else "red"))
+                    self.result_table.setItem(row, 7, status_item)
+                    
+                    # Son görülme zamanını güncelle
+                    self.result_table.setItem(row, 8, QTableWidgetItem(device['last_seen']))
+                    break
+                    
+        except Exception as e:
+            logging.error(f"Cihaz durumu güncelleme hatası: {str(e)}")
+
+class MonitorWorker(QThread):
+    """Cihazları izleyen worker thread"""
+    device_updated = pyqtSignal(dict)
+    error = pyqtSignal(str)
+    
+    def __init__(self, scanner, devices):
+        super().__init__()
+        self.scanner = scanner
+        self.devices = devices
+        
+    def run(self):
+        try:
+            self.scanner.monitor_devices(self.devices, self.device_updated.emit)
+        except Exception as e:
+            self.error.emit(str(e))
 
 def main():
     # Yönetici haklarını kontrol et

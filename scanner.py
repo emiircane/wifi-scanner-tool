@@ -12,6 +12,12 @@ import requests
 
 class NetworkScanner:
     def __init__(self):
+        self.port_profiles = {
+            'quick': [20, 21, 22, 23, 25, 53, 80, 110, 143, 443, 445, 3306, 3389, 8080],
+            'common': [20, 21, 22, 23, 25, 53, 80, 110, 143, 443, 445, 3306, 3389, 8080, 8443, 27017],
+            'full': list(range(1, 65536))
+        }
+        self.current_profile = 'quick'
         self.mac_cache = {}  # MAC adresi üretici bilgilerini önbellekle
         self.hostname_cache = {}  # Hostname bilgilerini önbellekle
         self.logger = logging.getLogger('NetworkScanner')
@@ -157,37 +163,25 @@ class NetworkScanner:
             self.logger.error(f"Ağ aralığı hesaplanırken hata: {e}")
             return None
 
-    def arp_scan(self, network):
-        """Ağdaki cihazları ARP taraması ile tespit eder"""
+    def arp_scan(self, ip):
+        """
+        Tek bir IP adresi için ARP taraması yapar
+        """
         try:
-            # ARP request paketi oluştur
-            arp = ARP(pdst=network)
+            # ARP request oluştur
+            arp = ARP(pdst=ip)
             ether = Ether(dst="ff:ff:ff:ff:ff:ff")
             packet = ether/arp
-
-            # Paketi gönder ve cevapları al
-            result = srp(packet, timeout=3, verbose=0)[0]
             
-            devices = []
-            for sent, received in result:
-                ip = received.psrc
-                mac = received.hwsrc
-                vendor = self.get_mac_vendor(mac)
-                
-                device = {
-                    'ip': ip,
-                    'mac': mac,
-                    'vendor': vendor,
-                    'status': 'Active',
-                    'last_seen': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                }
-                devices.append(device)
-                logging.info(f"Found device: {ip} ({mac}) - {vendor}")
+            # Paketi gönder ve yanıt bekle
+            result = srp(packet, timeout=1, verbose=0)[0]
             
-            return devices
+            # Yanıt varsa cihaz çevrimiçi
+            return len(result) > 0
+            
         except Exception as e:
-            logging.error(f"ARP tarama hatası: {str(e)}")
-            return []
+            logging.error(f"ARP tarama hatası ({ip}): {str(e)}")
+            return False
 
     def port_scan(self, ip):
         """Belirtilen IP adresinde port taraması yapar"""
@@ -325,3 +319,36 @@ class NetworkScanner:
     def get_scan_results(self) -> List[Dict]:
         """Return the results of the last scan."""
         return self.devices 
+
+    def monitor_devices(self, devices, callback=None):
+        """
+        Cihazların çevrimiçi durumunu sürekli izler
+        """
+        try:
+            while True:
+                for device in devices:
+                    ip = device.get('ip')
+                    if not ip:
+                        continue
+                        
+                    # ARP ping ile cihazın çevrimiçi olup olmadığını kontrol et
+                    is_online = self.arp_scan(ip)
+                    
+                    # Cihazın durumunu güncelle
+                    device['is_online'] = is_online
+                    device['last_seen'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                    
+                    # Callback fonksiyonu varsa çağır
+                    if callback:
+                        callback(device)
+                        
+                    # Her cihaz için 1 saniye bekle
+                    time.sleep(1)
+                    
+                # Tüm cihazlar kontrol edildikten sonra 30 saniye bekle
+                time.sleep(30)
+                
+        except Exception as e:
+            logging.error(f"Cihaz izleme hatası: {str(e)}")
+            if callback:
+                callback({'error': str(e)}) 
