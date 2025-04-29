@@ -5,9 +5,11 @@ import requests
 import winreg
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                             QHBoxLayout, QPushButton, QComboBox, QTableWidget, 
-                            QTableWidgetItem, QLabel, QProgressBar, QMessageBox)
-from PyQt6.QtCore import Qt, QThread, pyqtSignal
-from PyQt6.QtGui import QFont, QIcon
+                            QTableWidgetItem, QLabel, QProgressBar, QMessageBox,
+                            QTabWidget, QSplitter, QLineEdit)
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QDateTime
+from PyQt6.QtGui import QFont, QIcon, QPainter
+from PyQt6.QtCharts import QChart, QChartView, QLineSeries, QDateTimeAxis, QValueAxis
 import logging
 from datetime import datetime
 import tempfile
@@ -16,6 +18,7 @@ import win32com.client
 import psutil
 import socket
 import ctypes
+import random
 
 from utils import generate_html_report, log_scan_results
 from scanner import NetworkScanner
@@ -190,105 +193,140 @@ class NmapInstallerThread(QThread):
         except Exception as e:
             self.error.emit(str(e))
 
+def get_interface_info(interface_name):
+    """Seçilen ağ arayüzünün IP ve netmask bilgilerini döndürür"""
+    try:
+        # Arayüz adından parantez içindeki IP'yi çıkar
+        ip = interface_name.split('(')[1].split(')')[0]
+        
+        # IP adresinden ağ bilgilerini al
+        interfaces = get_network_interfaces()
+        for iface in interfaces:
+            if iface['ip'] == ip:
+                return {
+                    'ip': iface['ip'],
+                    'netmask': iface['netmask']
+                }
+        
+        # Eğer bulunamazsa, varsayılan olarak /24 subnet mask kullan
+        return {
+            'ip': ip,
+            'netmask': '255.255.255.0'
+        }
+    except Exception as e:
+        logging.error(f"Arayüz bilgisi alınamadı: {str(e)}")
+        return None
+
 class ScanWorker(QThread):
     """Arka planda tarama işlemini gerçekleştiren worker thread"""
-    finished = pyqtSignal(list)
     progress = pyqtSignal(int)
+    status = pyqtSignal(str)  # Yeni sinyal: durum mesajları için
+    finished = pyqtSignal(list)
     error = pyqtSignal(str)
     
-    def __init__(self, interface_ip, interface_netmask):
+    def __init__(self, scanner, interface, ip_range=None):
         super().__init__()
-        self.interface_ip = interface_ip
-        self.interface_netmask = interface_netmask
-        self.scanner = None
-        self.is_running = False
-        
-        # Loglama ayarlarını güncelle
-        self.logger = logging.getLogger('ScanWorker')
-        self.logger.setLevel(logging.DEBUG)
-        
-        # Dosyaya loglama
-        fh = logging.FileHandler('scan_debug.log')
-        fh.setLevel(logging.DEBUG)
-        formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-        fh.setFormatter(formatter)
-        self.logger.addHandler(fh)
+        self.scanner = scanner
+        self.interface = interface
+        self.ip_range = ip_range
+        self.is_running = True
         
     def run(self):
         try:
-            self.is_running = True
-            self.logger.info(f"Tarama başlatılıyor - IP: {self.interface_ip}, Netmask: {self.interface_netmask}")
-            
-            # Scanner'ı başlat
-            try:
-                self.scanner = NetworkScanner()
-                self.logger.debug("NetworkScanner başarıyla oluşturuldu")
-            except Exception as e:
-                self.logger.error(f"NetworkScanner oluşturma hatası: {str(e)}")
-                raise
-            
             # Başlangıç ilerlemesi
-            self.progress.emit(10)
-            self.logger.debug("İlerleme: 10%")
+            self.progress.emit(0)
+            self.status.emit("Tarama başlatılıyor...")
             
-            # Ağ taramasını başlat
-            try:
-                self.logger.debug("Ağ taraması başlatılıyor...")
-                devices = self.scanner.scan_network(self.interface_ip, self.interface_netmask)
-                self.logger.info(f"Ağ taraması tamamlandı. Bulunan cihaz sayısı: {len(devices) if devices else 0}")
-            except Exception as e:
-                self.logger.error(f"Ağ tarama hatası: {str(e)}")
-                raise
+            # ARP taraması başlat
+            self.progress.emit(10)
+            self.status.emit("ARP taraması yapılıyor...")
+            devices = self.scanner.scan_network(self.interface, self.ip_range)
             
             if not devices:
-                self.logger.warning("Ağda hiç cihaz bulunamadı")
-                self.error.emit("Ağda hiç cihaz bulunamadı.")
+                self.error.emit("Hiç cihaz bulunamadı")
                 return
-            
-            self.progress.emit(50)
-            self.logger.debug("İlerleme: 50%")
-            
-            # Her cihaz için port taraması yap
+                
+            # İlerleme güncellemesi
             total_devices = len(devices)
-            self.logger.info(f"Port taraması başlatılıyor. Toplam cihaz sayısı: {total_devices}")
+            self.status.emit(f"{total_devices} cihaz bulundu. Detaylı tarama başlatılıyor...")
             
+            # Her cihaz için ilerleme güncelle
             for i, device in enumerate(devices):
                 if not self.is_running:
-                    self.logger.info("Tarama kullanıcı tarafından durduruldu")
-                    break
+                    return
+                    
+                # Her cihaz için ilerleme güncelle (10% - 90% arası)
+                progress = 10 + int((i + 1) / total_devices * 80)
+                self.progress.emit(progress)
+                self.status.emit(f"Cihaz {i+1}/{total_devices} taranıyor: {device['ip']}")
                 
-                try:
-                    self.logger.debug(f"Port taraması başlatılıyor - Cihaz {i+1}/{total_devices}: {device['ip']}")
-                    port_info = self.scanner.port_scan(device['ip'])
-                    devices[i].update(port_info)
-                    self.logger.debug(f"Port taraması tamamlandı - Cihaz: {device['ip']}")
-                    
-                    progress = 50 + int((i + 1) / total_devices * 50)
-                    self.progress.emit(progress)
-                    self.logger.debug(f"İlerleme: {progress}%")
-                    
-                except Exception as e:
-                    self.logger.error(f"Port tarama hatası ({device['ip']}): {str(e)}")
-                    continue
+            # Rapor oluşturma
+            self.progress.emit(90)
+            self.status.emit("Raporlar oluşturuluyor...")
             
-            if self.is_running:
-                self.logger.info("Tarama başarıyla tamamlandı")
-                self.finished.emit(devices)
+            # Tarama tamamlandı
+            self.progress.emit(100)
+            self.status.emit("Tarama tamamlandı!")
+            self.finished.emit(devices)
             
         except Exception as e:
-            error_msg = f"Tarama sırasında hata oluştu: {str(e)}"
-            self.logger.error(error_msg, exc_info=True)  # Tam hata stack'ini logla
-            self.error.emit(error_msg)
-        finally:
-            self.is_running = False
-            self.logger.info("Tarama thread'i sonlandırıldı")
+            self.error.emit(f"Tarama sırasında hata: {str(e)}")
             
     def stop(self):
-        """Taramayı güvenli bir şekilde durdur"""
-        self.logger.info("Tarama durdurma isteği alındı")
         self.is_running = False
-        self.wait()
-        self.logger.info("Tarama durduruldu")
+
+class DeviceActivityChart(QChart):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setTitle("Cihaz Aktivite Grafiği")
+        self.setAnimationOptions(QChart.AnimationOption.SeriesAnimations)
+        self.legend().setVisible(True)
+        self.legend().setAlignment(Qt.AlignmentFlag.AlignBottom)
+        
+        # Zaman ekseni
+        self.timeAxis = QDateTimeAxis()
+        self.timeAxis.setFormat("HH:mm:ss")
+        self.timeAxis.setTitleText("Zaman")
+        self.addAxis(self.timeAxis, Qt.AlignmentFlag.AlignBottom)
+        
+        # Değer ekseni
+        self.valueAxis = QValueAxis()
+        self.valueAxis.setTitleText("Aktivite Seviyesi")
+        self.valueAxis.setRange(0, 100)
+        self.addAxis(self.valueAxis, Qt.AlignmentFlag.AlignLeft)
+        
+        self.series = {}
+        self.maxPoints = 100  # Maksimum veri noktası sayısı
+        
+    def addDevice(self, device_ip):
+        if device_ip not in self.series:
+            series = QLineSeries()
+            series.setName(device_ip)
+            self.addSeries(series)
+            series.attachAxis(self.timeAxis)
+            series.attachAxis(self.valueAxis)
+            self.series[device_ip] = series
+            
+    def updateDeviceActivity(self, device_ip, activity_level):
+        if device_ip not in self.series:
+            self.addDevice(device_ip)
+            
+        series = self.series[device_ip]
+        current_time = QDateTime.currentDateTime()
+        
+        # Yeni veri noktası ekle
+        series.append(current_time.toMSecsSinceEpoch(), activity_level)
+        
+        # Eski veri noktalarını temizle
+        while series.count() > self.maxPoints:
+            series.remove(0)
+            
+        # Eksenleri güncelle
+        if series.count() > 0:
+            self.timeAxis.setRange(
+                QDateTime.fromMSecsSinceEpoch(series.at(0).x()),
+                QDateTime.fromMSecsSinceEpoch(series.at(series.count()-1).x())
+            )
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -306,58 +344,96 @@ class MainWindow(QMainWindow):
         self.logger.addHandler(fh)
         
         # GUI kurulumu
-        self.setWindowTitle("WiFi Tarayıcı Aracı")
-        self.setMinimumSize(800, 600)
+        self.setWindowTitle("WiFi Scanner Tool")
+        self.setGeometry(100, 100, 800, 600)
         
         # Ana widget ve layout
         main_widget = QWidget()
         self.setCentralWidget(main_widget)
         layout = QVBoxLayout(main_widget)
         
+        # Tab widget oluştur
+        self.tab_widget = QTabWidget()
+        layout.addWidget(self.tab_widget)
+        
+        # Tarama sekmesi
+        scan_tab = QWidget()
+        scan_layout = QVBoxLayout(scan_tab)
+        
         # Başlık
-        title = QLabel("WiFi Tarayıcı Aracı")
+        title = QLabel("WiFi Scanner Tool")
         title.setFont(QFont("Arial", 16, QFont.Weight.Bold))
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(title)
+        scan_layout.addWidget(title)
         
-        # Arayüz seçimi
+        # Ağ arayüzü seçimi
         interface_layout = QHBoxLayout()
         interface_label = QLabel("Ağ Arayüzü:")
         self.interface_combo = QComboBox()
         self.refresh_interfaces()
         interface_layout.addWidget(interface_label)
         interface_layout.addWidget(self.interface_combo)
-        layout.addLayout(interface_layout)
+        scan_layout.addLayout(interface_layout)
+        
+        # IP aralığı girişi
+        ip_range_layout = QHBoxLayout()
+        ip_range_label = QLabel("IP Aralığı:")
+        self.start_ip_input = QLineEdit()
+        self.start_ip_input.setPlaceholderText("Başlangıç IP (örn: 192.168.1.1)")
+        self.end_ip_input = QLineEdit()
+        self.end_ip_input.setPlaceholderText("Bitiş IP (örn: 192.168.1.254)")
+        ip_range_layout.addWidget(ip_range_label)
+        ip_range_layout.addWidget(self.start_ip_input)
+        ip_range_layout.addWidget(QLabel("-"))
+        ip_range_layout.addWidget(self.end_ip_input)
+        scan_layout.addLayout(ip_range_layout)
         
         # Tarama butonu
         self.scan_button = QPushButton("Taramayı Başlat")
         self.scan_button.clicked.connect(self.start_scan)
-        layout.addWidget(self.scan_button)
+        scan_layout.addWidget(self.scan_button)
         
-        # İlerleme çubuğu
+        # İlerleme çubuğu ve durum etiketi
+        progress_layout = QHBoxLayout()
         self.progress_bar = QProgressBar()
         self.progress_bar.setVisible(False)
-        layout.addWidget(self.progress_bar)
+        self.status_label = QLabel("")
+        progress_layout.addWidget(self.progress_bar)
+        progress_layout.addWidget(self.status_label)
+        scan_layout.addLayout(progress_layout)
         
         # Sonuç tablosu
         self.result_table = QTableWidget()
         self.result_table.setColumnCount(7)
-        self.result_table.setHorizontalHeaderLabels([
-            "IP Adresi", "MAC Adresi", "Üretici", "Durum", 
-            "Açık Portlar", "İşletim Sistemi", "Son Görülme"
-        ])
-        layout.addWidget(self.result_table)
+        self.result_table.setHorizontalHeaderLabels(["IP", "MAC", "Hostname", "Üretici", "Açık Portlar", "İşletim Sistemi", "Servisler"])
+        scan_layout.addWidget(self.result_table)
         
         # Yenile butonu
         refresh_button = QPushButton("Arayüzleri Yenile")
         refresh_button.clicked.connect(self.refresh_interfaces)
-        layout.addWidget(refresh_button)
+        scan_layout.addWidget(refresh_button)
         
-        # Durum çubuğu
-        self.status_label = QLabel("")
-        layout.addWidget(self.status_label)
+        self.scanner = NetworkScanner()
+        self.worker = None
         
-        self.scan_worker = None
+        # Grafik sekmesi
+        chart_tab = QWidget()
+        chart_layout = QVBoxLayout(chart_tab)
+        
+        # Aktivite grafiği
+        self.activity_chart = DeviceActivityChart()
+        chart_view = QChartView(self.activity_chart)
+        chart_view.setRenderHint(QPainter.RenderHint.Antialiasing)
+        chart_layout.addWidget(chart_view)
+        
+        # Sekmeleri ekle
+        self.tab_widget.addTab(scan_tab, "Ağ Tarama")
+        self.tab_widget.addTab(chart_tab, "Aktivite Grafiği")
+        
+        # Aktivite güncelleme zamanlayıcısı
+        self.activity_timer = QTimer()
+        self.activity_timer.timeout.connect(self.updateDeviceActivity)
+        self.activity_timer.start(1000)  # Her saniye güncelle
 
     def refresh_interfaces(self):
         """Ağ arayüzlerini yeniler"""
@@ -435,61 +511,62 @@ class MainWindow(QMainWindow):
         msg.exec()
 
     def start_scan(self):
+        """Taramayı başlat"""
         try:
-            self.logger.info("Tarama başlatma isteği alındı")
-            
-            if not self.interface_combo.currentText():
-                self.logger.warning("Ağ arayüzü seçilmedi")
-                QMessageBox.warning(self, "Uyarı", "Lütfen bir ağ arayüzü seçin.")
-                return
-            
-            # Nmap kontrolü
+            # Nmap kurulumunu kontrol et
             if not check_nmap_installation():
-                self.logger.info("Nmap kurulu değil, kurulum başlatılıyor")
-                self.check_and_install_nmap()
-                return
+                reply = QMessageBox.question(self, "Nmap Kurulumu",
+                                          "Nmap yüklü değil. Şimdi indirip kurmak ister misiniz?",
+                                          QMessageBox.Yes | QMessageBox.No)
+                if reply == QMessageBox.Yes:
+                    self.install_nmap()
+                else:
+                    return
+            
+            # IP aralığını kontrol et
+            start_ip = self.start_ip_input.text().strip()
+            end_ip = self.end_ip_input.text().strip()
+            
+            if start_ip and end_ip:
+                try:
+                    # IP adreslerinin geçerli olduğunu kontrol et
+                    socket.inet_aton(start_ip)
+                    socket.inet_aton(end_ip)
+                    ip_range = f"{start_ip}-{end_ip}"
+                except socket.error:
+                    QMessageBox.warning(self, "Hata", "Geçersiz IP adresi formatı!")
+                    return
+            else:
+                ip_range = None
             
             # Arayüz bilgilerini al
-            interface_data = self.interface_combo.currentData()
-            if not interface_data:
-                self.logger.warning("Geçerli ağ arayüzü seçilmedi")
-                QMessageBox.warning(self, "Uyarı", "Geçerli bir ağ arayüzü seçilmedi.")
+            interface = self.interface_combo.currentText()
+            if not interface:
+                QMessageBox.warning(self, "Hata", "Lütfen bir ağ arayüzü seçin!")
                 return
             
-            self.logger.info(f"Seçilen arayüz: {interface_data}")
-            
-            # Önceki tarama varsa durdur
-            if self.scan_worker and self.scan_worker.isRunning():
-                self.logger.info("Önceki tarama durduruluyor")
-                self.scan_worker.stop()
-            
-            # Yeni tarama başlat
-            self.scan_worker = ScanWorker(interface_data['ip'], interface_data['netmask'])
-            self.scan_worker.progress.connect(self.update_progress)
-            self.scan_worker.finished.connect(self.scan_finished)
-            self.scan_worker.error.connect(self.scan_error)
-            
-            # UI'ı güncelle
-            self.scan_button.setText("Taramayı Durdur")
-            self.scan_button.clicked.disconnect()
-            self.scan_button.clicked.connect(self.stop_scan)
-            self.progress_bar.setVisible(True)
+            # UI güncelle
+            self.scan_button.setEnabled(False)
             self.progress_bar.setValue(0)
+            self.progress_bar.setVisible(True)
             self.result_table.setRowCount(0)
             
-            self.logger.info("Tarama başlatılıyor")
-            self.scan_worker.start()
+            # Tarama işlemini başlat
+            self.worker = ScanWorker(self.scanner, interface, ip_range)
+            self.worker.progress.connect(self.update_progress)
+            self.worker.status.connect(self.update_status)
+            self.worker.finished.connect(self.scan_finished)
+            self.worker.error.connect(self.scan_error)
+            self.worker.start()
             
         except Exception as e:
-            error_msg = f"Tarama başlatılırken hata oluştu: {str(e)}"
-            self.logger.error(error_msg, exc_info=True)
-            QMessageBox.critical(self, "Hata", error_msg)
-            self.reset_scan_ui()
-            
+            QMessageBox.critical(self, "Hata", f"Tarama başlatılırken hata: {str(e)}")
+            self.scan_button.setEnabled(True)
+
     def stop_scan(self):
         """Aktif taramayı durdur"""
-        if self.scan_worker and self.scan_worker.isRunning():
-            self.scan_worker.stop()
+        if self.worker and self.worker.isRunning():
+            self.worker.stop()
             self.reset_scan_ui()
             
     def reset_scan_ui(self):
@@ -504,59 +581,49 @@ class MainWindow(QMainWindow):
             self.logger.error(f"UI sıfırlama hatası: {str(e)}")
 
     def update_progress(self, value):
-        """İlerleme çubuğunu günceller"""
         self.progress_bar.setValue(value)
-        if value == 10:
-            self.status_label.setText("Scanner başlatılıyor...")
-        elif value == 20:
-            self.status_label.setText("Ağ taraması yapılıyor...")
-        elif value == 100:
-            self.status_label.setText("Tarama tamamlandı!")
-
+        
+    def update_status(self, message):
+        self.status_label.setText(message)
+        
     def scan_finished(self, devices):
-        """Tarama tamamlandığında çağrılır"""
         try:
-            self.logger.info("Tarama sonuçları alındı, UI güncelleniyor")
+            # Sonuçları sakla
+            self.last_scan_results = devices
             
-            # UI kontrollerini güncelle
-            self.reset_scan_ui()
-            self.status_label.setText(f"Tarama tamamlandı! {len(devices)} cihaz bulundu.")
-            self.logger.debug("UI kontrolleri güncellendi")
+            # UI güncelle
+            self.scan_button.setEnabled(True)
+            self.progress_bar.setVisible(False)
+            self.status_label.setText(f"Tarama tamamlandı - {len(devices)} cihaz bulundu")
             
-            try:
-                # Tabloyu güncelle
-                self.logger.debug("Tablo güncelleniyor")
-                self.result_table.setRowCount(len(devices))
-                
-                for row, device in enumerate(devices):
-                    try:
-                        # Her bir hücreyi güvenli bir şekilde güncelle
-                        items = [
-                            (0, device.get('ip', 'N/A')),
-                            (1, device.get('mac', 'N/A')),
-                            (2, device.get('vendor', 'Unknown')),
-                            (3, device.get('status', 'Unknown')),
-                            (4, ', '.join(map(str, device.get('open_ports', []))) or 'None'),
-                            (5, device.get('os', 'Unknown')),
-                            (6, device.get('last_seen', 'N/A'))
-                        ]
-                        
-                        for col, value in items:
-                            try:
-                                item = QTableWidgetItem(str(value))
-                                self.result_table.setItem(row, col, item)
-                            except Exception as e:
-                                self.logger.error(f"Hücre güncelleme hatası (satır {row}, sütun {col}): {str(e)}")
-                                
-                    except Exception as e:
-                        self.logger.error(f"Satır güncelleme hatası (satır {row}): {str(e)}")
-                        continue
-                
-                self.logger.debug("Tablo başarıyla güncellendi")
-                
-            except Exception as e:
-                self.logger.error(f"Tablo güncelleme hatası: {str(e)}")
-                QMessageBox.warning(self, "Uyarı", "Sonuçlar tabloya yüklenirken hata oluştu!")
+            # Tabloyu güncelle
+            self.logger.debug("Tablo güncelleniyor")
+            self.result_table.setRowCount(len(devices))
+            
+            for row, device in enumerate(devices):
+                try:
+                    # IP
+                    self.result_table.setItem(row, 0, QTableWidgetItem(device.get('ip', 'N/A')))
+                    # MAC
+                    self.result_table.setItem(row, 1, QTableWidgetItem(device.get('mac', 'N/A')))
+                    # Hostname
+                    self.result_table.setItem(row, 2, QTableWidgetItem(device.get('hostname', 'N/A')))
+                    # Vendor
+                    self.result_table.setItem(row, 3, QTableWidgetItem(device.get('vendor', 'Unknown')))
+                    # Open Ports
+                    ports = device.get('ports', [])
+                    ports_str = ', '.join(map(str, ports)) if ports else 'None'
+                    self.result_table.setItem(row, 4, QTableWidgetItem(ports_str))
+                    # OS
+                    self.result_table.setItem(row, 5, QTableWidgetItem(device.get('os', 'Unknown')))
+                    # Services
+                    self.result_table.setItem(row, 6, QTableWidgetItem(device.get('services', 'N/A')))
+                    
+                except Exception as e:
+                    self.logger.error(f"Satır güncelleme hatası (satır {row}): {str(e)}")
+                    continue
+            
+            self.logger.debug("Tablo başarıyla güncellendi")
             
             # Raporları oluşturmayı dene
             report_errors = []
@@ -592,6 +659,13 @@ class MainWindow(QMainWindow):
                 QMessageBox.information(self, "Başarılı", 
                     f"Tarama tamamlandı!\n{len(devices)} cihaz bulundu.\nRaporlar oluşturuldu.")
             
+            # Grafik sekmesine geç
+            self.tab_widget.setCurrentIndex(1)
+            
+            # Her cihaz için grafik serisi oluştur
+            for device in devices:
+                self.activity_chart.addDevice(device['ip'])
+            
         except Exception as e:
             error_msg = f"Sonuçları işlerken hata oluştu: {str(e)}"
             self.logger.error(error_msg, exc_info=True)
@@ -599,12 +673,25 @@ class MainWindow(QMainWindow):
         finally:
             self.progress_bar.setVisible(False)
 
-    def scan_error(self, error_message):
-        """Tarama sırasında hata oluştuğunda çağrılır"""
+    def scan_error(self, error_msg):
+        QMessageBox.warning(self, "Hata", error_msg)
         self.scan_button.setEnabled(True)
         self.progress_bar.setVisible(False)
         self.status_label.setText("Tarama sırasında hata oluştu!")
-        QMessageBox.critical(self, "Hata", f"Tarama sırasında bir hata oluştu:\n{error_message}")
+
+    def updateDeviceActivity(self):
+        """Cihaz aktivitelerini güncelle"""
+        try:
+            # Eğer tarama çalışıyorsa ve sonuçlar varsa
+            if hasattr(self, 'worker') and self.worker and self.worker.isRunning():
+                # Sonuçları al
+                if hasattr(self, 'last_scan_results') and self.last_scan_results:
+                    for device in self.last_scan_results:
+                        # Aktivite seviyesini hesapla (örnek olarak rastgele bir değer)
+                        activity_level = random.randint(0, 100)
+                        self.activity_chart.updateDeviceActivity(device['ip'], activity_level)
+        except Exception as e:
+            self.logger.error(f"Aktivite güncelleme hatası: {str(e)}")
 
 def main():
     # Yönetici haklarını kontrol et

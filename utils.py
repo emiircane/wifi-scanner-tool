@@ -35,6 +35,47 @@ def get_network_interfaces() -> List[Dict[str, str]]:
                     })
     return interfaces
 
+def get_interface_info(interface_name: str) -> Dict[str, str]:
+    """Get detailed information about a specific network interface."""
+    logger = logging.getLogger('utils')
+    try:
+        # Eğer interface_name bir string ise ve parantez içinde IP adresi varsa
+        if '(' in interface_name and ')' in interface_name:
+            # Parantez içindeki IP adresini çıkar
+            ip = interface_name.split('(')[1].split(')')[0]
+            name = interface_name.split('(')[0].strip()
+            
+            # Ağ arayüzlerini al
+            interfaces = get_network_interfaces()
+            
+            # IP adresine göre arayüzü bul
+            for iface in interfaces:
+                if iface['ip'] == ip:
+                    logger.debug(f"Arayüz bilgileri bulundu: {iface}")
+                    return iface
+                    
+            # Eğer bulunamazsa, varsayılan netmask ile döndür
+            logger.warning(f"Arayüz bulunamadı, varsayılan netmask kullanılıyor: {ip}")
+            return {
+                'name': name,
+                'ip': ip,
+                'netmask': '255.255.255.0'  # Varsayılan netmask
+            }
+        else:
+            # Arayüz adına göre arayüzü bul
+            interfaces = get_network_interfaces()
+            for iface in interfaces:
+                if iface['name'] == interface_name:
+                    logger.debug(f"Arayüz bilgileri bulundu: {iface}")
+                    return iface
+                    
+            logger.error(f"Arayüz bulunamadı: {interface_name}")
+            return None
+            
+    except Exception as e:
+        logger.error(f"Arayüz bilgileri alınamadı: {str(e)}", exc_info=True)
+        return None
+
 def get_mac_vendor(mac_address: str) -> str:
     """Look up the vendor of a MAC address using the macvendors.com API."""
     try:
@@ -51,102 +92,122 @@ def get_mac_vendor(mac_address: str) -> str:
         logging.error(f"Error looking up MAC vendor: {e}")
         return "Unknown"
 
-def generate_html_report(devices: List[Dict], filename: str = 'report.html') -> None:
-    """Generate an HTML report of scanned devices."""
+def generate_html_report(devices, filename='report.html'):
+    """HTML raporu oluşturur"""
     try:
-        report_logger.debug(f"HTML rapor oluşturuluyor: {filename}")
-        report_logger.debug(f"Cihaz sayısı: {len(devices)}")
+        # Raporlar için dizin oluştur
+        reports_dir = 'reports'
+        if not os.path.exists(reports_dir):
+            os.makedirs(reports_dir)
+            
+        report_path = os.path.join(reports_dir, filename)
         
-        # Cihaz verilerini kontrol et
-        for i, device in enumerate(devices):
-            report_logger.debug(f"Cihaz {i+1}: {device}")
+        # HTML şablonu
+        html_template = """
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <meta charset="UTF-8">
+            <title>Ağ Tarama Raporu</title>
+            <style>
+                body {
+                    font-family: Arial, sans-serif;
+                    margin: 20px;
+                    background-color: #f5f5f5;
+                }
+                h1 {
+                    color: #333;
+                    text-align: center;
+                }
+                table {
+                    width: 100%;
+                    border-collapse: collapse;
+                    margin-top: 20px;
+                    background-color: white;
+                    box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+                }
+                th, td {
+                    padding: 12px;
+                    text-align: left;
+                    border-bottom: 1px solid #ddd;
+                }
+                th {
+                    background-color: #4CAF50;
+                    color: white;
+                }
+                tr:nth-child(even) {
+                    background-color: #f2f2f2;
+                }
+                tr:hover {
+                    background-color: #ddd;
+                }
+                .timestamp {
+                    text-align: right;
+                    color: #666;
+                    margin-top: 20px;
+                }
+            </style>
+        </head>
+        <body>
+            <h1>Ağ Tarama Raporu</h1>
+            <div class="timestamp">Oluşturulma Zamanı: {timestamp}</div>
+            <table>
+                <tr>
+                    <th>IP Adresi</th>
+                    <th>MAC Adresi</th>
+                    <th>Hostname</th>
+                    <th>Üretici</th>
+                    <th>Açık Portlar</th>
+                    <th>İşletim Sistemi</th>
+                    <th>Servisler</th>
+                    <th>Son Görülme</th>
+                    <th>Durum</th>
+                </tr>
+        """
         
-        html_content = """<!DOCTYPE html>
-<html>
-<head>
-    <title>Network Scan Report</title>
-    <style>
-        body { 
-            font-family: Arial, sans-serif; 
-            margin: 20px; 
-        }
-        table { 
-            border-collapse: collapse; 
-            width: 100%; 
-        }
-        th, td { 
-            border: 1px solid #ddd; 
-            padding: 8px; 
-            text-align: left; 
-        }
-        th { 
-            background-color: #f2f2f2; 
-        }
-        tr:nth-child(even) { 
-            background-color: #f9f9f9; 
-        }
-        .timestamp { 
-            color: #666; 
-            margin-bottom: 20px; 
-        }
-    </style>
-</head>
-<body>
-    <h1>Network Scan Report</h1>
-    <div class="timestamp">Generated on: {timestamp}</div>
-    <table>
-        <tr>
-            <th>IP Address</th>
-            <th>MAC Address</th>
-            <th>Vendor</th>
-            <th>Status</th>
-            <th>Open Ports</th>
-            <th>OS</th>
-            <th>Last Seen</th>
-        </tr>""".format(timestamp=datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
-
+        # Cihaz bilgilerini ekle
         for device in devices:
-            try:
-                # Open ports'u güvenli bir şekilde işle
-                open_ports = device.get('open_ports', [])
-                if isinstance(open_ports, list):
-                    open_ports_str = ', '.join(map(str, open_ports)) or 'None'
-                else:
-                    open_ports_str = str(open_ports) or 'None'
-                
-                html_content += f"""
-        <tr>
-            <td>{device.get('ip', 'N/A')}</td>
-            <td>{device.get('mac', 'N/A')}</td>
-            <td>{device.get('vendor', 'Unknown')}</td>
-            <td>{device.get('status', 'Unknown')}</td>
-            <td>{open_ports_str}</td>
-            <td>{device.get('os', 'Unknown')}</td>
-            <td>{device.get('last_seen', 'N/A')}</td>
-        </tr>"""
-            except Exception as e:
-                report_logger.error(f"Cihaz verisi işlenirken hata: {str(e)}")
-                continue
-
-        html_content += """
-    </table>
-</body>
-</html>"""
-
-        # Dosyayı yazmadan önce dizini kontrol et
-        directory = os.path.dirname(filename)
-        if directory and not os.path.exists(directory):
-            os.makedirs(directory)
-            report_logger.debug(f"Dizin oluşturuldu: {directory}")
-
-        with open(filename, 'w', encoding='utf-8') as f:
-            f.write(html_content)
-        report_logger.info(f"HTML rapor başarıyla oluşturuldu: {filename}")
+            html_template += """
+                <tr>
+                    <td>{ip}</td>
+                    <td>{mac}</td>
+                    <td>{hostname}</td>
+                    <td>{vendor}</td>
+                    <td>{open_ports}</td>
+                    <td>{os}</td>
+                    <td>{services}</td>
+                    <td>{last_seen}</td>
+                    <td>{status}</td>
+                </tr>
+            """.format(
+                ip=device.get('ip', 'Unknown'),
+                mac=device.get('mac', 'Unknown'),
+                hostname=device.get('hostname', 'Unknown'),
+                vendor=device.get('vendor', 'Unknown'),
+                open_ports=', '.join(map(str, device.get('open_ports', []))),
+                os=device.get('os', 'Unknown'),
+                services=device.get('services', 'Unknown'),
+                last_seen=device.get('last_seen', 'Unknown'),
+                status=device.get('status', 'Unknown')
+            )
+            
+        # HTML'i kapat
+        html_template += """
+            </table>
+        </body>
+        </html>
+        """
+        
+        # Raporu kaydet
+        with open(report_path, 'w', encoding='utf-8') as f:
+            f.write(html_template.format(timestamp=datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+            
+        logging.info(f"HTML raporu oluşturuldu: {report_path}")
+        return True
         
     except Exception as e:
-        report_logger.error(f"HTML rapor oluşturma hatası: {str(e)}", exc_info=True)
-        # Hatayı yut ve devam et
-        pass
+        logging.error(f"HTML rapor oluşturma hatası: {str(e)}", exc_info=True)
+        return False
 
 def log_scan_results(devices: List[Dict], filename: str = 'log.csv') -> None:
     """Log scan results to a CSV file."""
@@ -157,9 +218,18 @@ def log_scan_results(devices: List[Dict], filename: str = 'log.csv') -> None:
         import pandas as pd
         from datetime import datetime
         
-        # Cihaz verilerini kontrol et
+        # Cihaz verilerini kontrol et ve logla
         for i, device in enumerate(devices):
-            report_logger.debug(f"Cihaz {i+1}: {device}")
+            report_logger.debug(f"Cihaz {i+1} detayları:")
+            report_logger.debug(f"  IP: {device.get('ip', 'N/A')}")
+            report_logger.debug(f"  MAC: {device.get('mac', 'N/A')}")
+            report_logger.debug(f"  Hostname: {device.get('hostname', 'N/A')}")
+            report_logger.debug(f"  Vendor: {device.get('vendor', 'Unknown')}")
+            report_logger.debug(f"  Status: {device.get('status', 'Unknown')}")
+            report_logger.debug(f"  Open Ports: {device.get('open_ports', [])}")
+            report_logger.debug(f"  OS: {device.get('os', 'Unknown')}")
+            report_logger.debug(f"  Services: {device.get('services', 'N/A')}")
+            report_logger.debug(f"  Last Seen: {device.get('last_seen', 'N/A')}")
         
         # Convert devices to DataFrame
         df = pd.DataFrame(devices)
@@ -168,7 +238,7 @@ def log_scan_results(devices: List[Dict], filename: str = 'log.csv') -> None:
         df['scan_timestamp'] = datetime.now()
         
         # Ensure all columns exist
-        required_columns = ['ip', 'mac', 'vendor', 'status', 'open_ports', 'os', 'last_seen']
+        required_columns = ['ip', 'mac', 'hostname', 'vendor', 'status', 'open_ports', 'os', 'services', 'last_seen']
         for col in required_columns:
             if col not in df.columns:
                 df[col] = 'N/A'
@@ -196,5 +266,4 @@ def log_scan_results(devices: List[Dict], filename: str = 'log.csv') -> None:
         
     except Exception as e:
         report_logger.error(f"CSV log oluşturma hatası: {str(e)}", exc_info=True)
-        # Hatayı yut ve devam et
-        pass 
+        raise  # Hatayı yukarı fırlat 

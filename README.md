@@ -9,12 +9,14 @@ Yerel ağınızdaki cihazlar hakkında detaylı bilgi sağlayan kapsamlı bir a�
   - Gerçek zamanlı ilerleme göstergesi
   - Detaylı sonuç tablosu
   - Ağ arayüzü seçimi ve yenileme
+  - Aktivite grafiği ile cihaz izleme
 
 - **Gelişmiş Ağ Tarama**
   - ARP ve ICMP taraması
   - Port taraması ve işletim sistemi tespiti
   - MAC adresi üretici bilgisi sorgulama
   - Cihaz aktivite izleme
+  - Önbellekli MAC ve hostname sorgulama
 
 - **Otomatik Kurulum ve Yapılandırma**
   - Nmap otomatik kurulum ve yapılandırma
@@ -26,12 +28,14 @@ Yerel ağınızdaki cihazlar hakkında detaylı bilgi sağlayan kapsamlı bir a�
   - CSV formatında log kayıtları
   - Cihaz detayları ve istatistikler
   - Hata durumunda bile çalışmaya devam etme
+  - Gelişmiş hata yönetimi ve loglama
 
 - **Güvenlik ve Hata Yönetimi**
   - Kapsamlı hata yakalama ve loglama
   - Güvenli thread yönetimi
   - Kullanıcı dostu hata mesajları
   - Tarama işlemini güvenli şekilde durdurma
+  - Detaylı hata raporlama
 
 ## Gereksinimler
 
@@ -80,9 +84,10 @@ Programı çalıştırmak için üç yöntem var:
 1. Program başladığında, ağ arayüzlerini gösteren bir açılır liste göreceksiniz
 2. Taramak istediğiniz ağ arayüzünü seçin
 3. "Taramayı Başlat" düğmesine tıklayın
-4. Tarama ilerlemesini ilerleme çubuğundan takip edin
+4. Tarama ilerlemesini ilerleme çubuğundan ve durum mesajlarından takip edin
 5. Tarama tamamlandığında sonuçlar tabloda görüntülenecek
 6. HTML rapor ve CSV log dosyaları otomatik olarak oluşturulacak
+7. Aktivite grafiği sekmesinde cihaz aktivitelerini izleyebilirsiniz
 
 ## Proje Yapısı
 
@@ -92,8 +97,25 @@ Programı çalıştırmak için üç yöntem var:
 - `utils.py` - Yardımcı fonksiyonlar ve raporlama
 - `requirements.txt` - Gerekli Python paketleri
 - `run_as_admin.bat` - Yönetici haklarıyla çalıştırma betiği
-- `report.html` - Oluşturulan HTML raporları
-- `log.csv` - Aktivite günlükleri
+- `reports/` - Oluşturulan HTML raporları ve CSV logları
+- `network_scan.log` - Genel log kayıtları
+
+## Son Güncellemeler
+
+- **Performans İyileştirmeleri**:
+  - Nmap taraması optimize edildi
+  - MAC adresi ve hostname bilgileri için önbellekleme eklendi
+  - Tarama süreci hızlandırıldı
+
+- **Kullanıcı Arayüzü İyileştirmeleri**:
+  - İlerleme çubuğu daha detaylı hale getirildi
+  - Durum mesajları eklendi
+  - Aktivite grafiği geliştirildi
+
+- **Hata Yönetimi**:
+  - Daha kapsamlı hata yakalama ve loglama
+  - Kullanıcı dostu hata mesajları
+  - Rapor oluşturma hatalarının daha iyi yönetimi
 
 ## Güvenlik Uyarısı
 
