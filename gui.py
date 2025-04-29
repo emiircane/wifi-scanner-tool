@@ -343,6 +343,144 @@ class MainWindow(QMainWindow):
         fh.setFormatter(formatter)
         self.logger.addHandler(fh)
         
+        # Scanner ve worker değişkenlerini tanımla
+        self.scanner = NetworkScanner()
+        self.scan_worker = None
+        self.monitor_worker = None
+        
+        # Stil ayarları
+        self.setStyleSheet("""
+            QMainWindow {
+                background-color: #1a1a1a;
+            }
+            QWidget {
+                background-color: #1a1a1a;
+                color: #ffffff;
+            }
+            QLabel {
+                color: #ffffff;
+                font-size: 12px;
+            }
+            QPushButton {
+                background-color: #ff6b00;
+                color: white;
+                border: none;
+                padding: 8px 15px;
+                border-radius: 4px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #ff8533;
+            }
+            QPushButton:disabled {
+                background-color: #4d4d4d;
+            }
+            QComboBox {
+                padding: 5px;
+                border: 1px solid #333333;
+                border-radius: 4px;
+                background-color: #2d2d2d;
+                color: white;
+            }
+            QComboBox:hover {
+                border: 1px solid #ff6b00;
+            }
+            QComboBox::drop-down {
+                border: none;
+            }
+            QComboBox::down-arrow {
+                image: none;
+                border: none;
+            }
+            QLineEdit {
+                padding: 5px;
+                border: 1px solid #333333;
+                border-radius: 4px;
+                background-color: #2d2d2d;
+                color: white;
+            }
+            QLineEdit:focus {
+                border: 1px solid #ff6b00;
+            }
+            QProgressBar {
+                border: 1px solid #333333;
+                border-radius: 4px;
+                text-align: center;
+                background-color: #2d2d2d;
+                color: white;
+            }
+            QProgressBar::chunk {
+                background-color: #ff6b00;
+                border-radius: 3px;
+            }
+            QTableWidget {
+                border: 1px solid #333333;
+                border-radius: 4px;
+                background-color: #2d2d2d;
+                gridline-color: #404040;
+                color: white;
+            }
+            QTableWidget::item {
+                padding: 5px;
+                background-color: #2d2d2d;
+                color: white;
+            }
+            QTableWidget::item:selected {
+                background-color: #ff6b00;
+                color: white;
+            }
+            QTableWidget QTableCornerButton::section {
+                background-color: #1a1a1a;
+                border: none;
+            }
+            QHeaderView::section {
+                background-color: #1a1a1a;
+                color: white;
+                padding: 8px;
+                border: none;
+                font-weight: bold;
+            }
+            QTabWidget::pane {
+                border: 1px solid #333333;
+                border-radius: 4px;
+                background-color: #2d2d2d;
+            }
+            QTabBar::tab {
+                background-color: #1a1a1a;
+                color: #ffffff;
+                padding: 8px 15px;
+                border: 1px solid #333333;
+                border-bottom: none;
+                border-top-left-radius: 4px;
+                border-top-right-radius: 4px;
+            }
+            QTabBar::tab:selected {
+                background-color: #2d2d2d;
+                color: #ff6b00;
+                border-bottom: 2px solid #ff6b00;
+            }
+            QTabBar::tab:hover:!selected {
+                background-color: #333333;
+            }
+            QScrollBar:vertical {
+                border: none;
+                background-color: #2d2d2d;
+                width: 10px;
+                margin: 0px;
+            }
+            QScrollBar::handle:vertical {
+                background-color: #ff6b00;
+                min-height: 20px;
+                border-radius: 5px;
+            }
+            QScrollBar::handle:vertical:hover {
+                background-color: #ff8533;
+            }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+                height: 0px;
+            }
+        """)
+        
         # GUI kurulumu
         self.setWindowTitle("WiFi Scanner Tool")
         self.setGeometry(100, 100, 1200, 800)
@@ -351,6 +489,8 @@ class MainWindow(QMainWindow):
         main_widget = QWidget()
         self.setCentralWidget(main_widget)
         layout = QVBoxLayout(main_widget)
+        layout.setSpacing(10)
+        layout.setContentsMargins(20, 20, 20, 20)
         
         # Tab widget oluştur
         self.tab_widget = QTabWidget()
@@ -359,25 +499,31 @@ class MainWindow(QMainWindow):
         # Tarama sekmesi
         scan_tab = QWidget()
         scan_layout = QVBoxLayout(scan_tab)
+        scan_layout.setSpacing(15)
         
         # Başlık
         title = QLabel("WiFi Scanner Tool")
-        title.setFont(QFont("Arial", 16, QFont.Weight.Bold))
+        title.setFont(QFont("Arial", 32, QFont.Weight.Bold))
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        title.setStyleSheet("color: #ff6b00; margin: 20px; letter-spacing: 1px;")
         scan_layout.addWidget(title)
         
         # Ağ arayüzü seçimi
         interface_layout = QHBoxLayout()
         interface_label = QLabel("Ağ Arayüzü:")
+        interface_label.setFont(QFont("Arial", 11))
         self.interface_combo = QComboBox()
+        self.interface_combo.setMinimumWidth(300)
         self.refresh_interfaces()
         interface_layout.addWidget(interface_label)
         interface_layout.addWidget(self.interface_combo)
+        interface_layout.addStretch()
         scan_layout.addLayout(interface_layout)
         
         # IP aralığı girişi
         ip_range_layout = QHBoxLayout()
         ip_range_label = QLabel("IP Aralığı:")
+        ip_range_label.setFont(QFont("Arial", 11))
         self.start_ip_input = QLineEdit()
         self.start_ip_input.setPlaceholderText("Başlangıç IP (örn: 192.168.1.1)")
         self.end_ip_input = QLineEdit()
@@ -386,18 +532,36 @@ class MainWindow(QMainWindow):
         ip_range_layout.addWidget(self.start_ip_input)
         ip_range_layout.addWidget(QLabel("-"))
         ip_range_layout.addWidget(self.end_ip_input)
+        ip_range_layout.addStretch()
         scan_layout.addLayout(ip_range_layout)
+        
+        # Butonlar için container
+        button_container = QHBoxLayout()
         
         # Tarama butonu
         self.scan_button = QPushButton("Taramayı Başlat")
+        self.scan_button.setFont(QFont("Arial", 11))
+        self.scan_button.setMinimumWidth(150)
         self.scan_button.clicked.connect(self.start_scan)
-        scan_layout.addWidget(self.scan_button)
+        button_container.addWidget(self.scan_button)
+        
+        # Yenile butonu
+        refresh_button = QPushButton("Arayüzleri Yenile")
+        refresh_button.setFont(QFont("Arial", 11))
+        refresh_button.setMinimumWidth(150)
+        refresh_button.clicked.connect(self.refresh_interfaces)
+        button_container.addWidget(refresh_button)
+        
+        button_container.addStretch()
+        scan_layout.addLayout(button_container)
         
         # İlerleme çubuğu ve durum etiketi
         progress_layout = QHBoxLayout()
         self.progress_bar = QProgressBar()
         self.progress_bar.setVisible(False)
+        self.progress_bar.setMinimumHeight(25)
         self.status_label = QLabel("")
+        self.status_label.setFont(QFont("Arial", 10))
         progress_layout.addWidget(self.progress_bar)
         progress_layout.addWidget(self.status_label)
         scan_layout.addLayout(progress_layout)
@@ -410,20 +574,14 @@ class MainWindow(QMainWindow):
             "Açık Portlar", "İşletim Sistemi", "Servisler",
             "Çevrimiçi", "Son Görülme"
         ])
+        self.result_table.horizontalHeader().setStretchLastSection(True)
+        self.result_table.setAlternatingRowColors(True)
         scan_layout.addWidget(self.result_table)
-        
-        # Yenile butonu
-        refresh_button = QPushButton("Arayüzleri Yenile")
-        refresh_button.clicked.connect(self.refresh_interfaces)
-        scan_layout.addWidget(refresh_button)
-        
-        self.scanner = NetworkScanner()
-        self.scan_worker = None
-        self.monitor_worker = None
         
         # Grafik sekmesi
         chart_tab = QWidget()
         chart_layout = QVBoxLayout(chart_tab)
+        chart_layout.setSpacing(15)
         
         # Aktivite grafiği
         self.activity_chart = DeviceActivityChart()
